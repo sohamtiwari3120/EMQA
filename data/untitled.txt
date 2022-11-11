@@ -1,0 +1,10 @@
+    4  git clone git@github.com:NavidRajabi/EMQA.git
+    5  cd EMQA/
+    6  cd data/
+    7  wget https://storage.googleapis.com/tydiqa/v1.1/tydiqa-goldp-v1.1-train.json
+    8  wget https://storage.googleapis.com/tydiqa/v1.1/tydiqa-goldp-v1.1-dev.json
+    9  wget https://drive.google.com/file/d/1iysveqE-f0nA7Lra0zoH5FEZdZ2-oZzk/view?usp=share_link
+   10  gdown https://drive.google.com/file/d/1iysveqE-f0nA7Lra0zoH5FEZdZ2-oZzk/view?usp=share_link
+   13  gdown 1iysveqE-f0nA7Lra0zoH5FEZdZ2-oZzk
+   14  gdown 1-U6_hH3u242-2DOUGJa6cB47IwGb0dmY
+   

@@ -45,18 +45,29 @@ from transformers.data.metrics.squad_metrics import (
     squad_evaluate,
 )
 from transformers.data.processors.squad import SquadResult, SquadV1Processor, SquadV2Processor
-
+import wandb
 
 try:
     from torch.utils.tensorboard import SummaryWriter
 except ImportError:
     from tensorboardX import SummaryWriter
 
+logging.basicConfig(filename="xlm-roberta.log",
+                    filemode='a',
+                    format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
+                    datefmt='%H:%M:%S',
+                    level=logging.DEBUG)
 
+logging.info("xlm-roberta")
 logger = logging.getLogger(__name__)
 
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_QUESTION_ANSWERING_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
+
+import wandb
+
+user = "11711-ass2"
+project = "ass3"
 
 
 def set_seed(args):
@@ -213,6 +224,8 @@ def train(args, train_dataset, model, tokenizer):
                     scaled_loss.backward()
             else:
                 loss.backward()
+                
+            wandb.log({"train":{"loss": loss.item()}})
 
             tr_loss += loss.item()
             if (step + 1) % args.gradient_accumulation_steps == 0:
@@ -424,6 +437,7 @@ def load_and_cache_examples(args, tokenizer, evaluate=False, output_examples=Fal
             features_and_dataset["dataset"],
             features_and_dataset["examples"],
         )
+        # print("1"*50)
     else:
         logger.info("Creating features from dataset file at %s", input_dir)
 
@@ -438,12 +452,16 @@ def load_and_cache_examples(args, tokenizer, evaluate=False, output_examples=Fal
 
             tfds_examples = tfds.load("squad")
             examples = SquadV1Processor().get_examples_from_dataset(tfds_examples, evaluate=evaluate)
+            # print("2"*50)
         else:
             processor = SquadV2Processor() if args.version_2_with_negative else SquadV1Processor()
+            print(args.data_dir, args.predict_file)
             if evaluate:
                 examples = processor.get_dev_examples(args.data_dir, filename=args.predict_file)
             else:
                 examples = processor.get_train_examples(args.data_dir, filename=args.train_file)
+            # print("3"*50)
+        # print(examples)
 
         features, dataset = squad_convert_examples_to_features(
             examples=examples,
@@ -473,6 +491,7 @@ def main():
     parser = argparse.ArgumentParser()
 
     # Required parameters
+    parser.add_argument("-rn", "--run_name", type=str, required=True, help="Description for current run")
     parser.add_argument(
         "--model_type",
         default=None,
@@ -658,6 +677,9 @@ def main():
 
     parser.add_argument("--threads", type=int, default=1, help="multiple threads for converting example to features")
     args = parser.parse_args()
+    print(args)
+    wandb.init(entity=user, project=project, name=args.run_name, config=args)
+    
 
     if args.doc_stride >= args.max_seq_length - args.max_query_length:
         logger.warning(
@@ -730,6 +752,7 @@ def main():
         args.tokenizer_name if args.tokenizer_name else args.model_name_or_path,
         do_lower_case=args.do_lower_case,
         cache_dir=args.cache_dir if args.cache_dir else None,
+        use_fast=False
     )
     model = AutoModelForQuestionAnswering.from_pretrained(
         args.model_name_or_path,
@@ -761,6 +784,7 @@ def main():
     if args.do_train:
         train_dataset = load_and_cache_examples(args, tokenizer, evaluate=False, output_examples=False)
         global_step, tr_loss = train(args, train_dataset, model, tokenizer)
+        wandb.log({"train": {"global_step": global_step, "tr_loss": tr_loss}})
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 
     # Save the trained model and the tokenizer
@@ -809,10 +833,14 @@ def main():
             result = evaluate(args, model, tokenizer, prefix=global_step)
 
             result = dict((k + ("_{}".format(global_step) if global_step else ""), v) for k, v in result.items())
+            result['checkpoint'] = checkpoint
             results.update(result)
+            wandb.log({"eval": {"result": result}})
 
     logger.info("Results: {}".format(results))
-
+    wandb.log({"eval":{"Results": results}})
+    
+    wandb.finish()
     return results
 
 
