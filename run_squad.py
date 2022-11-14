@@ -55,7 +55,14 @@ try:
 except ImportError:
     from tensorboardX import SummaryWriter
 
-logging.info("xlm-roberta")
+timestr = time.strftime("%d%m%Y-%H%M%S")
+logging.basicConfig( filename=f"output_logs.log",
+                    filemode='a',
+        format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
+        datefmt="%d/%m/%Y %H:%M:%S",
+        level=logging.DEBUG,
+    )
+logging.info("mbert")
 logger = logging.getLogger(__name__)
 
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_QUESTION_ANSWERING_MAPPING.keys())
@@ -176,8 +183,8 @@ def train(args, train_dataset, model, tokenizer):
             steps_trained_in_current_epoch = global_step % (len(train_dataloader) // args.gradient_accumulation_steps)
 
             logger.info("  Continuing training from checkpoint, will skip to saved global_step")
-            logger.info("  Continuing training from epoch %d", epochs_trained)
-            logger.info("  Continuing training from global step %d", global_step)
+            logger.info("  Continuing training from epoch %d = %d // (%d // %d)", epochs_trained, global_step, len(train_dataloader), args.gradient_accumulation_steps)
+            logger.info("  Continuing training from global step %d ", global_step)
             logger.info("  Will skip the first %d steps in the first epoch", steps_trained_in_current_epoch)
         except ValueError:
             logger.info("  Starting fine-tuning.")
@@ -190,6 +197,7 @@ def train(args, train_dataset, model, tokenizer):
     # Added here for reproductibility
     set_seed(args)
     logger.info("  Starting TRAINING LOOP")
+    start_delete_checkpoint = 10000
     for _ in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
@@ -276,6 +284,13 @@ def train(args, train_dataset, model, tokenizer):
                     torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
                     torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
                     logger.info("Saving optimizer and scheduler states to %s", output_dir)
+
+                    # deleting old checkpoint
+                    output_dir = os.path.join(args.output_dir, "checkpoint-{}".format(start_delete_checkpoint))
+                    start_delete_checkpoint+=args.save_steps
+                    if os.system(f"rm -rf {output_dir}") == 0:
+                        logger.info("Deleted old checkpoint %s", output_dir)
+
 
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
@@ -702,6 +717,9 @@ def main():
     parser.add_argument(
         "--overwrite_data_cache", action="store_true", help="Overwrite the cached training and evaluation sets"
     )
+    parser.add_argument( "-rt",
+        "--resume_training", action="store_true", help="Overwrite the cached training and evaluation sets"
+    )
     parser.add_argument("--seed", type=int, default=42, help="random seed for initialization")
 
     parser.add_argument("--local_rank", type=int, default=-1, help="local_rank for distributed training on gpus")
@@ -771,13 +789,7 @@ def main():
     args.device = device
 
     # Setup logging
-    timestr = time.strftime("%d%m%Y-%H%M%S")
-    logging.basicConfig( filename=f"{args.model_type}_{timestr}.log",
-                    filemode='a',
-        format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
-        datefmt="%d/%m/%Y %H:%M:%S",
-        level=logging.DEBUG if args.local_rank in [-1, 0] else logging.WARN,
-    )
+    
     logger.warning(
         "Process rank: %s, device: %s, n_gpu: %s, distributed training: %s, 16-bits training: %s",
         args.local_rank,
@@ -854,6 +866,7 @@ def main():
         torch.save(args, os.path.join(args.output_dir, "training_args.bin"))
 
         # Load a trained model and vocabulary that you have fine-tuned
+        logger.info("Loading model checkpoint from as distributed_rank=0 %s", args.output_dir)
         model = AutoModelForQuestionAnswering.from_pretrained(args.output_dir)  # , force_download=True)
         tokenizer = AutoTokenizer.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case, use_fast=False)
         model.to(args.device)
