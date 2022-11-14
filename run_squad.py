@@ -22,12 +22,15 @@ import logging
 import os
 import random
 import timeit
+import pickle
+import time
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
+from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
+from typing import List
 
 from transformers import (
     MODEL_FOR_QUESTION_ANSWERING_MAPPING,
@@ -52,12 +55,6 @@ try:
 except ImportError:
     from tensorboardX import SummaryWriter
 
-logging.basicConfig(filename="xlm-roberta.log",
-                    filemode='a',
-                    format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
-                    datefmt='%H:%M:%S',
-                    level=logging.DEBUG)
-
 logging.info("xlm-roberta")
 logger = logging.getLogger(__name__)
 
@@ -69,6 +66,20 @@ import wandb
 user = "11711-ass2"
 project = "ass3"
 
+class CustomDataset(Dataset):
+    """Custom dataset."""
+
+    def __init__(self, filepaths: List[str]):
+        self.filepaths = filepaths
+
+    def __len__(self):
+        return len(self.filepaths)
+
+    def __getitem__(self, idx):
+        dataset = None
+        with open(self.filepaths[idx], 'rb') as handle:
+            dataset = pickle.load(handle)
+        return dataset
 
 def set_seed(args):
     random.seed(args.seed)
@@ -156,6 +167,7 @@ def train(args, train_dataset, model, tokenizer):
     steps_trained_in_current_epoch = 0
     # Check if continuing training from a checkpoint
     if os.path.exists(args.model_name_or_path):
+        print("1"*10)
         try:
             # set global_step to gobal_step of last saved checkpoint from model path
             checkpoint_suffix = args.model_name_or_path.split("-")[-1].split("/")[0]
@@ -177,7 +189,7 @@ def train(args, train_dataset, model, tokenizer):
     )
     # Added here for reproductibility
     set_seed(args)
-
+    logger.info("  Starting TRAINING LOOP")
     for _ in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
@@ -331,8 +343,15 @@ def evaluate(args, model, tokenizer, prefix=""):
         for i, feature_index in enumerate(feature_indices):
             eval_feature = features[feature_index.item()]
             unique_id = int(eval_feature.unique_id)
-
-            output = [to_list(output[i]) for output in outputs]
+            # print(outputs[0][i], outputs[0])
+            # output = [to_list(outputs[key][i]) for key in outputs]
+            output = [to_list(outputs[output][i]) for output in range(0,len(outputs))]
+            # print(len(output), [len(o) for o in output])
+            # print(outputs)
+            # print(feature_index, feature_indices)
+            # print(eval_feature)
+            # print(unique_id)
+            # print(list(outputs.keys()))
 
             # Some models (XLNet, XLM) use 5 arguments for their predictions, while the other "simpler"
             # models only use two.
@@ -421,15 +440,23 @@ def load_and_cache_examples(args, tokenizer, evaluate=False, output_examples=Fal
     input_dir = args.data_dir if args.data_dir else "."
     cached_features_file = os.path.join(
         input_dir,
-        "cached_{}_{}_{}".format(
+        "cached_{}_{}_{}.pt".format(
             "dev" if evaluate else "train",
             list(filter(None, args.model_name_or_path.split("/"))).pop(),
             str(args.max_seq_length),
         ),
     )
 
+    dir = "/home/ubuntu/EMQA/data/eng+tsquad_batches"
+    dataset_filepaths = glob.glob(dir+"/*.pkl")
+    if args.split_data_into_batches_and_save and len(dataset_filepaths)>0 and not args.overwrite_data_cache and not evaluate:
+        logger.info("Loading features from pickle files in %s", dir)
+        ds = CustomDataset(dataset_filepaths)
+        logger.info("Successfully loaded features from pickle files in %s", dir)
+        return ds
+
     # Init features and dataset from cache if it exists
-    if os.path.exists(cached_features_file) and not args.overwrite_cache:
+    if os.path.exists(cached_features_file) and not args.overwrite_data_cache:
         logger.info("Loading features from cached file %s", cached_features_file)
         features_and_dataset = torch.load(cached_features_file)
         features, dataset, examples = (
@@ -474,9 +501,27 @@ def load_and_cache_examples(args, tokenizer, evaluate=False, output_examples=Fal
             threads=args.threads,
         )
 
-        if args.local_rank in [-1, 0]:
+        # if args.local_rank in [-1, 0]:
+        if args.split_data_into_batches_and_save and not evaluate:
+            logger.info("Saving pkl files into dir %s", dir)
+            dataset_filepaths = []
+            ctr = 0
+            print(len(dataset))
+            for i in range(len(dataset)):
+                fp = os.path.join(dir, f"dataset_{i}.pkl")
+                dataset_filepaths.append(fp)
+                with open(fp, "wb") as f:
+                    # print([d for d in dataset[i]])
+                    # print([d.clone() for d in dataset[i]])
+                    data = tuple([d.clone() for d in dataset[i]])
+                    pickle.dump(data, f)
+                ctr+=1
+            logger.info(f"Saved {ctr} pickle files to {dir}")
+            return CustomDataset(dataset_filepaths)
+        else:
             logger.info("Saving features into cached file %s", cached_features_file)
-            torch.save({"features": features, "dataset": dataset, "examples": examples}, cached_features_file)
+            with open(cached_features_file, "wb") as f:
+                torch.save({"features": features, "dataset": dataset, "examples": examples}, f)
 
     if args.local_rank == 0 and not evaluate:
         # Make sure only the first process in distributed training process the dataset, and the others will use the cache
@@ -547,7 +592,7 @@ def main():
     )
     parser.add_argument(
         "--cache_dir",
-        default="/scratch/nrajabi/NLP_A3",
+        default="./cache_dir/",
         type=str,
         help="Where do you want to store the pre-trained models downloaded from s3",
     )
@@ -655,7 +700,7 @@ def main():
         "--overwrite_output_dir", action="store_true", help="Overwrite the content of the output directory"
     )
     parser.add_argument(
-        "--overwrite_cache", action="store_true", help="Overwrite the cached training and evaluation sets"
+        "--overwrite_data_cache", action="store_true", help="Overwrite the cached training and evaluation sets"
     )
     parser.add_argument("--seed", type=int, default=42, help="random seed for initialization")
 
@@ -674,6 +719,11 @@ def main():
     )
     parser.add_argument("--server_ip", type=str, default="", help="Can be used for distant debugging.")
     parser.add_argument("--server_port", type=str, default="", help="Can be used for distant debugging.")
+    parser.add_argument(
+        "-sd", "--split_data_into_batches_and_save",
+        action="store_true",
+        help="Whether to split the loaded data into batches and save",
+    )
 
     parser.add_argument("--threads", type=int, default=1, help="multiple threads for converting example to features")
     args = parser.parse_args()
@@ -721,10 +771,12 @@ def main():
     args.device = device
 
     # Setup logging
-    logging.basicConfig(
+    timestr = time.strftime("%d%m%Y-%H%M%S")
+    logging.basicConfig( filename=f"{args.model_type}_{timestr}.log",
+                    filemode='a',
         format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
-        datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO if args.local_rank in [-1, 0] else logging.WARN,
+        datefmt="%d/%m/%Y %H:%M:%S",
+        level=logging.DEBUG if args.local_rank in [-1, 0] else logging.WARN,
     )
     logger.warning(
         "Process rank: %s, device: %s, n_gpu: %s, distributed training: %s, 16-bits training: %s",
@@ -744,6 +796,7 @@ def main():
         torch.distributed.barrier()
 
     args.model_type = args.model_type.lower()
+    print("123", args.config_name if args.config_name else args.model_name_or_path)
     config = AutoConfig.from_pretrained(
         args.config_name if args.config_name else args.model_name_or_path,
         cache_dir=args.cache_dir if args.cache_dir else None,
@@ -802,7 +855,7 @@ def main():
 
         # Load a trained model and vocabulary that you have fine-tuned
         model = AutoModelForQuestionAnswering.from_pretrained(args.output_dir)  # , force_download=True)
-        tokenizer = AutoTokenizer.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
+        tokenizer = AutoTokenizer.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case, use_fast=False)
         model.to(args.device)
 
     # Evaluation - we can ask to evaluate all the checkpoints (sub-directories) in a directory
