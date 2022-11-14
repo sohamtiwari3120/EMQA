@@ -197,7 +197,8 @@ def train(args, train_dataset, model, tokenizer):
     # Added here for reproductibility
     set_seed(args)
     logger.info("  Starting TRAINING LOOP")
-    start_delete_checkpoint = 10000
+    start_delete_checkpoint = args.delete_old_checkpoints
+    delete_checkpoints = start_delete_checkpoint!=-1
     for _ in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
@@ -286,10 +287,12 @@ def train(args, train_dataset, model, tokenizer):
                     logger.info("Saving optimizer and scheduler states to %s", output_dir)
 
                     # deleting old checkpoint
-                    output_dir = os.path.join(args.output_dir, "checkpoint-{}".format(start_delete_checkpoint))
-                    start_delete_checkpoint+=args.save_steps
-                    if os.system(f"rm -rf {output_dir}") == 0:
-                        logger.info("Deleted old checkpoint %s", output_dir)
+                    if delete_checkpoints and start_delete_checkpoint != global_step:
+                        output_dir = os.path.join(args.output_dir, "checkpoint-{}".format(start_delete_checkpoint))
+                        if os.path.exists(output_dir):
+                            if os.system(f"rm -rf {output_dir}") == 0:
+                                logger.info("Deleted old checkpoint %s", output_dir)
+                        start_delete_checkpoint+=args.save_steps
 
 
             if args.max_steps > 0 and global_step > args.max_steps:
@@ -717,9 +720,9 @@ def main():
     parser.add_argument(
         "--overwrite_data_cache", action="store_true", help="Overwrite the cached training and evaluation sets"
     )
-    parser.add_argument( "-rt",
-        "--resume_training", action="store_true", help="Overwrite the cached training and evaluation sets"
-    )
+    parser.add_argument("-doc",
+        "--delete_old_checkpoints", type=int, default=-1, help="delete checkpoints from checkpoint global step")
+
     parser.add_argument("--seed", type=int, default=42, help="random seed for initialization")
 
     parser.add_argument("--local_rank", type=int, default=-1, help="local_rank for distributed training on gpus")
