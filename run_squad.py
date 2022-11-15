@@ -173,7 +173,7 @@ def train(args, train_dataset, model, tokenizer):
     epochs_trained = 0
     steps_trained_in_current_epoch = 0
     # Check if continuing training from a checkpoint
-    if os.path.exists(args.model_name_or_path):
+    if os.path.exists(args.model_name_or_path) and not args.do_finetune:
         print("1"*10)
         try:
             # set global_step to gobal_step of last saved checkpoint from model path
@@ -199,7 +199,7 @@ def train(args, train_dataset, model, tokenizer):
     logger.info("  Starting TRAINING LOOP")
     start_delete_checkpoint = args.delete_old_checkpoints
     delete_checkpoints = start_delete_checkpoint!=-1
-    for _ in train_iterator:
+    for epoch in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
 
@@ -298,6 +298,9 @@ def train(args, train_dataset, model, tokenizer):
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
                 break
+        if args.push_to_huggingface_every_epoch:
+            model.push_to_hub(args.hf_name)
+            logger.info(f"  Pushed model weights to huggingface after epoch {epochs_trained+epoch} to {args.hf_name}")
         if args.max_steps > 0 and global_step > args.max_steps:
             train_iterator.close()
             break
@@ -465,8 +468,17 @@ def load_and_cache_examples(args, tokenizer, evaluate=False, output_examples=Fal
         ),
     )
 
-    dir = "/home/ubuntu/EMQA/data/eng+tsquad_batches"
-    dataset_filepaths = glob.glob(dir+"/*.pkl")
+    dir = args.data_pkl_dir
+    if not args.skip_dpr_check and args.split_data_into_batches_and_save and not evaluate:
+        x = input(f"Please confirm if you want to save/access pkl splits in {dir} - if yes enter 1:\n")
+        if int(x)!=1:
+            raise Exception("Data pickle dir not confirmed. Please change data pickle directory to the desired directory.")
+
+    dataset_filepaths = []
+    if os.path.exists(dir):
+        dataset_filepaths = glob.glob(dir+"/*.pkl")
+    else:
+        os.makedirs(dir, exist_ok=True)
     if args.split_data_into_batches_and_save and len(dataset_filepaths)>0 and not args.overwrite_data_cache and not evaluate:
         logger.info("Loading features from pickle files in %s", dir)
         ds = CustomDataset(dataset_filepaths)
@@ -474,7 +486,7 @@ def load_and_cache_examples(args, tokenizer, evaluate=False, output_examples=Fal
         return ds
 
     # Init features and dataset from cache if it exists
-    if os.path.exists(cached_features_file) and not args.overwrite_data_cache:
+    if not args.split_data_into_batches_and_save and os.path.exists(cached_features_file) and not args.overwrite_data_cache:
         logger.info("Loading features from cached file %s", cached_features_file)
         features_and_dataset = torch.load(cached_features_file)
         features, dataset, examples = (
@@ -648,7 +660,9 @@ def main():
         "be truncated to this length.",
     )
     parser.add_argument("--do_train", action="store_true", help="Whether to run training.")
+    parser.add_argument("--do_finetune", action="store_true", help="Whether to do finetuning.")
     parser.add_argument("--do_eval", action="store_true", help="Whether to run eval on the dev set.")
+    parser.add_argument("-sdc", "--skip_dpr_check", action="store_true", help="WARNING: Will disable dpr check")
     parser.add_argument(
         "--evaluate_during_training", action="store_true", help="Run evaluation during training at each logging step."
     )
@@ -746,6 +760,22 @@ def main():
         help="Whether to split the loaded data into batches and save",
     )
 
+    parser.add_argument("-hfn", "--hf_name", type=str, default="", help="Please change this value to the required huggingface name")
+    parser.add_argument("-dpr", "--data_pkl_dir", type=str, default="/home/ubuntu/EMQA/data/eng+tsquad_batches", help="Directory path to save pickled files")
+
+
+    parser.add_argument(
+        "-pthi", "--push_to_huggingface_initial_load",
+        action="store_true",
+        help="Whether to push model checkpoint to huggingface at initial load",
+    )
+
+    parser.add_argument(
+        "-pthe", "--push_to_huggingface_every_epoch",
+        action="store_true",
+        help="Whether to push model checkpoint to huggingface at the end of every epoch",
+    )
+
     parser.add_argument("--threads", type=int, default=1, help="multiple threads for converting example to features")
     args = parser.parse_args()
     print(args)
@@ -828,6 +858,15 @@ def main():
         config=config,
         cache_dir=args.cache_dir if args.cache_dir else None,
     )
+    # hf_name = f"sohamtiwari3120/{os.path.basename(args.model_name_or_path)}"
+    # args.hf_name = hf_name
+    if args.push_to_huggingface_initial_load or args.push_to_huggingface_every_epoch:
+        if args.hf_name == "":
+            args.hf_name = input("Please provide the name under which to push the model weights to huggingface: ")
+
+    if args.push_to_huggingface_initial_load:
+        model.push_to_hub(args.hf_name)
+        logger.info(f"Pushed model checkpoint to {args.hf_name} after initial load.")
 
     if args.local_rank == 0:
         # Make sure only the first process in distributed training will download model & vocab
